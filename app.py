@@ -21,12 +21,12 @@ from bson import ObjectId
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://frozenbotss:frozenbots@cluster0.s0tak.mongodb.net/?retryWrites=true&w=majority")
 MONGODB_DB_NAME = "stake_autoclaimer"
 MONGODB_COLLECTION = "premium_users"
-
 PORT = int(os.getenv("PORT", "5000"))
 TG_API_ID = int(os.getenv("TG_API_ID", "0") or "0")
 TG_API_HASH = os.getenv("TG_API_HASH", "")
 TG_SESSION = os.getenv("TG_SESSION", "tg_session")  # file path or session string
 CHANNELS = os.getenv("CHANNELS", "-1002772030545,-1001234567890")  # Multiple channels separated by comma
+
 # Enhanced regex patterns for different code formats
 CODE_PATTERNS = [
     r'(?i)Code:\s+([a-zA-Z0-9]{4,25})',           # "Code: stakecomrtlye4" - primary pattern
@@ -42,6 +42,7 @@ CODE_PATTERNS = [
     r'(?i)use\s+(?:code\s+)?([a-zA-Z0-9]{4,25})',  # "use code ABC123"
     r'(?i)enter\s+(?:code\s+)?([a-zA-Z0-9]{4,25})', # "enter code ABC123"
 ]
+
 # Pattern for extracting both code and value from messages like:
 # Code: stakecomlop1n84b
 # Value: $3
@@ -51,6 +52,7 @@ RING_SIZE = int(os.getenv("RING_SIZE", "100"))
 DEFAULT_USERNAME = "kustdev"  
 
 app = FastAPI()
+
 # Add CORS middleware to allow all origins for WebSocket connections
 app.add_middleware(
     CORSMiddleware,
@@ -59,6 +61,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 # Static files mount removed since index.html is in root directory
 
 # MongoDB Client
@@ -182,6 +185,7 @@ class WSManager:
 ws_manager = WSManager()
 ring: List[Dict[str, Any]] = []
 seen: Set[str] = set()
+
 # User authentication system
 authenticated_users: Dict[str, datetime] = {}  # username -> expiration time
 cleanup_task = None
@@ -202,7 +206,7 @@ async def init_mongodb():
 async def load_premium_users():
     """Load premium users from MongoDB into memory"""
     global authenticated_users
-    if not premium_users_collection:
+    if premium_users_collection is None:
         return
     
     try:
@@ -991,7 +995,7 @@ async def startup_event():
         print("❌ Failed to connect to MongoDB. Continuing without database.")
     
     # Load premium users from MongoDB
-    if premium_users_collection:
+    if premium_users_collection is not None:
         await load_premium_users()
     
     # Start user cleanup task
@@ -1170,7 +1174,7 @@ async def add_user(username: str = Query(...), plan: str = Query(...)):
     authenticated_users[username] = expiration
     
     # Add user to MongoDB if available
-    if premium_users_collection:
+    if premium_users_collection is not None:
         try:
             user_data = {
                 "username": username,
@@ -1229,7 +1233,7 @@ async def add_user_api(request: dict):
     authenticated_users[username] = expiration
     
     # Add user to MongoDB if available
-    if premium_users_collection:
+    if premium_users_collection is not None:
         try:
             user_data = {
                 "username": username,
@@ -1275,7 +1279,7 @@ async def delete_user_api(request: dict):
         print(f"🗑️ Deleted user from memory: {username}")
     
     # Remove user from MongoDB if available
-    if premium_users_collection:
+    if premium_users_collection is not None:
         try:
             result = await premium_users_collection.delete_one({"username": username})
             if result.deleted_count > 0:
