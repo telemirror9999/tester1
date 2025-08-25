@@ -1,4 +1,4 @@
-# app.py (integrated)
+# app.py (integrated with MongoDB)
 # Uses Telethon (Telegram USER) + FastAPI WebSocket server
 # Incorporates the user's code extraction idea (regex) where possible.
 import os, re, asyncio
@@ -14,13 +14,19 @@ import socket
 import uvicorn
 from fastapi import HTTPException, status
 import base64
+from motor.motor_asyncio import AsyncIOMotorClient
+from bson import ObjectId
+
+# MongoDB Configuration
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://frozenbotss:frozenbots@cluster0.s0tak.mongodb.net/?retryWrites=true&w=majority")
+MONGODB_DB_NAME = "stake_autoclaimer"
+MONGODB_COLLECTION = "premium_users"
 
 PORT = int(os.getenv("PORT", "5000"))
 TG_API_ID = int(os.getenv("TG_API_ID", "0") or "0")
 TG_API_HASH = os.getenv("TG_API_HASH", "")
 TG_SESSION = os.getenv("TG_SESSION", "tg_session")  # file path or session string
 CHANNELS = os.getenv("CHANNELS", "-1002772030545,-1001234567890")  # Multiple channels separated by comma
-
 # Enhanced regex patterns for different code formats
 CODE_PATTERNS = [
     r'(?i)Code:\s+([a-zA-Z0-9]{4,25})',           # "Code: stakecomrtlye4" - primary pattern
@@ -36,7 +42,6 @@ CODE_PATTERNS = [
     r'(?i)use\s+(?:code\s+)?([a-zA-Z0-9]{4,25})',  # "use code ABC123"
     r'(?i)enter\s+(?:code\s+)?([a-zA-Z0-9]{4,25})', # "enter code ABC123"
 ]
-
 # Pattern for extracting both code and value from messages like:
 # Code: stakecomlop1n84b
 # Value: $3
@@ -46,7 +51,6 @@ RING_SIZE = int(os.getenv("RING_SIZE", "100"))
 DEFAULT_USERNAME = "kustdev"  
 
 app = FastAPI()
-
 # Add CORS middleware to allow all origins for WebSocket connections
 app.add_middleware(
     CORSMiddleware,
@@ -55,8 +59,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # Static files mount removed since index.html is in root directory
+
+# MongoDB Client
+mongo_client = None
+db = None
+premium_users_collection = None
 
 class WSManager:
     def __init__(self):
@@ -174,10 +182,37 @@ class WSManager:
 ws_manager = WSManager()
 ring: List[Dict[str, Any]] = []
 seen: Set[str] = set()
-
 # User authentication system
 authenticated_users: Dict[str, datetime] = {}  # username -> expiration time
 cleanup_task = None
+
+async def init_mongodb():
+    """Initialize MongoDB connection"""
+    global mongo_client, db, premium_users_collection
+    try:
+        mongo_client = AsyncIOMotorClient(MONGODB_URI)
+        db = mongo_client[MONGODB_DB_NAME]
+        premium_users_collection = db[MONGODB_COLLECTION]
+        print("✅ Connected to MongoDB successfully")
+        return True
+    except Exception as e:
+        print(f"❌ MongoDB connection error: {e}")
+        return False
+
+async def load_premium_users():
+    """Load premium users from MongoDB into memory"""
+    global authenticated_users
+    if not premium_users_collection:
+        return
+    
+    try:
+        authenticated_users.clear()
+        cursor = premium_users_collection.find({"expires_at": {"$gt": datetime.now()}})
+        async for user in cursor:
+            authenticated_users[user["username"]] = user["expires_at"]
+        print(f"✅ Loaded {len(authenticated_users)} premium users from MongoDB")
+    except Exception as e:
+        print(f"❌ Error loading premium users: {e}")
 
 async def cleanup_expired_users():
     """Periodically remove expired user authentications"""
@@ -940,6 +975,7 @@ async def startup_event():
     print(f"🔑 TG_API_HASH configured: {'✅' if TG_API_HASH else '❌'}")
     print(f"📺 CHANNELS configured: {'✅' if CHANNELS else '❌'}")
     print(f"👤 Default username: {DEFAULT_USERNAME}")
+    print(f"🗄️ MongoDB URI configured: {'✅' if MONGODB_URI else '❌'}")
     
     # Get server IP for display
     try:
@@ -949,6 +985,14 @@ async def startup_event():
         print(f"🌐 Server local IP: {local_ip}")
     except:
         print("🌐 Could not determine server hostname/IP")
+    
+    # Initialize MongoDB
+    if not await init_mongodb():
+        print("❌ Failed to connect to MongoDB. Continuing without database.")
+    
+    # Load premium users from MongoDB
+    if premium_users_collection:
+        await load_premium_users()
     
     # Start user cleanup task
     global cleanup_task
@@ -1011,6 +1055,17 @@ async def server_status():
             telegram_status = tg_client.is_connected() and await tg_client.is_user_authorized()
     except Exception as e:
         telegram_error = str(e)
+    
+    mongodb_status = False
+    mongodb_error = None
+    try:
+        if mongo_client:
+            # Ping MongoDB to check connection
+            await mongo_client.admin.command('ping')
+            mongodb_status = True
+    except Exception as e:
+        mongodb_error = str(e)
+    
     return JSONResponse({
         "telegram_client": telegram_status,
         "telegram_error": telegram_error,
@@ -1024,7 +1079,10 @@ async def server_status():
         "api_hash_set": bool(TG_API_HASH and len(TG_API_HASH) > 5),
         "authenticated_users": len(authenticated_users),
         "auth_cleanup_running": cleanup_task is not None,
-        "default_user": DEFAULT_USERNAME
+        "default_user": DEFAULT_USERNAME,
+        "mongodb_status": mongodb_status,
+        "mongodb_error": mongodb_error,
+        "mongodb_uri_set": bool(MONGODB_URI)
     }, 200)
 
 @app.get("/latest")
@@ -1108,8 +1166,26 @@ async def add_user(username: str = Query(...), plan: str = Query(...)):
     hours = 24 if plan == "24hours" else 168
     expiration = datetime.now() + timedelta(hours=hours)
     
-    # Add or update user authentication
+    # Add or update user authentication in memory
     authenticated_users[username] = expiration
+    
+    # Add user to MongoDB if available
+    if premium_users_collection:
+        try:
+            user_data = {
+                "username": username,
+                "plan": plan,
+                "created_at": datetime.now(),
+                "expires_at": expiration
+            }
+            await premium_users_collection.replace_one(
+                {"username": username},
+                user_data,
+                upsert=True
+            )
+            print(f"✅ User {username} added to MongoDB with plan {plan}")
+        except Exception as e:
+            print(f"❌ Error adding user to MongoDB: {e}")
     
     # Log the action
     print(f"🔒 Added user: {username} with plan: {plan} (expires: {expiration})")
@@ -1149,8 +1225,30 @@ async def add_user_api(request: dict):
             "message": "Invalid plan"
         }, 400)
     
-    # Add or update user authentication
+    # Add or update user authentication in memory
     authenticated_users[username] = expiration
+    
+    # Add user to MongoDB if available
+    if premium_users_collection:
+        try:
+            user_data = {
+                "username": username,
+                "plan": plan,
+                "created_at": now,
+                "expires_at": expiration
+            }
+            await premium_users_collection.replace_one(
+                {"username": username},
+                user_data,
+                upsert=True
+            )
+            print(f"✅ User {username} added to MongoDB with plan {plan}")
+        except Exception as e:
+            print(f"❌ Error adding user to MongoDB: {e}")
+            return JSONResponse({
+                "status": "error",
+                "message": f"Failed to add user to database: {str(e)}"
+            }, 500)
     
     # Log the action
     print(f"🔒 Added user: {username} with plan: {plan} (expires: {expiration})")
@@ -1171,18 +1269,30 @@ async def delete_user_api(request: dict):
             "message": "Missing username"
         }, 400)
     
+    # Remove user from memory
     if username in authenticated_users:
         del authenticated_users[username]
-        print(f"🗑️ Deleted user: {username}")
-        return JSONResponse({
-            "status": "success",
-            "message": f"User {username} deleted"
-        })
-    else:
-        return JSONResponse({
-            "status": "error",
-            "message": f"User {username} not found"
-        }, 404)
+        print(f"🗑️ Deleted user from memory: {username}")
+    
+    # Remove user from MongoDB if available
+    if premium_users_collection:
+        try:
+            result = await premium_users_collection.delete_one({"username": username})
+            if result.deleted_count > 0:
+                print(f"🗑️ Deleted user from MongoDB: {username}")
+            else:
+                print(f"⚠️ User not found in MongoDB: {username}")
+        except Exception as e:
+            print(f"❌ Error deleting user from MongoDB: {e}")
+            return JSONResponse({
+                "status": "error",
+                "message": f"Failed to delete user from database: {str(e)}"
+            }, 500)
+    
+    return JSONResponse({
+        "status": "success",
+        "message": f"User {username} deleted"
+    })
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -1195,6 +1305,11 @@ async def shutdown_event():
         except asyncio.CancelledError:
             pass
         print("🛑 User cleanup task stopped")
+    
+    # Close MongoDB connection
+    if mongo_client:
+        mongo_client.close()
+        print("🛑 MongoDB connection closed")
 
 @app.websocket("/ws")
 async def ws(ws: WebSocket, user: str = Query(..., alias="user")):
