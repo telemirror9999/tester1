@@ -12,6 +12,8 @@ from telethon.errors import SessionPasswordNeededError
 from datetime import datetime, timedelta
 import socket
 import uvicorn
+from fastapi import HTTPException, status
+import base64
 
 PORT = int(os.getenv("PORT", "5000"))
 TG_API_ID = int(os.getenv("TG_API_ID", "0") or "0")
@@ -41,7 +43,8 @@ CODE_PATTERNS = [
 CODE_VALUE_PATTERN = r'(?i)Code:\s+([a-zA-Z0-9]{4,25})(?:.*?\n.*?Value:\s+\$?(\d+(?:\.\d{1,2})?))?'
 CLAIM_URL_BASE = os.getenv("CLAIM_URL_BASE", "https://autoclaim.example.com")
 RING_SIZE = int(os.getenv("RING_SIZE", "100"))
-DEFAULT_USERNAME = "kustdev"  # Default username for WebSocket connections
+DEFAULT_USERNAME = "kustdev"  
+
 app = FastAPI()
 
 # Add CORS middleware to allow all origins for WebSocket connections
@@ -225,6 +228,7 @@ def extract_codes_with_values(text: str) -> List[Dict[str, Any]]:
                     print(f"🎯 Found code with value: {code} = ${value}" if value else f"🎯 Found code: {code}")
     except Exception as e:
         print(f"⚠️ Code+Value pattern error: {e}")
+    
     # Then try all regular patterns (only for codes without values)
     for i, pattern_str in enumerate(CODE_PATTERNS):
         try:
@@ -263,6 +267,7 @@ def extract_codes_with_values(text: str) -> List[Dict[str, Any]]:
         # Valid codes: 4-25 characters, alphanumeric
         if 4 <= len(cleaned_code) <= 25 and cleaned_code.isalnum():
             valid_codes.append({"code": cleaned_code, "value": value})
+    
     # Remove duplicates while preserving order
     unique_codes = []
     for item in valid_codes:
@@ -336,15 +341,19 @@ async def start_listener():
         client = await ensure_tg()
         print(f"🎯 Current CHANNELS environment variable: '{CHANNELS}'")
         print(f"🎯 CHANNELS type: {type(CHANNELS)}")
+        
         # Parse multiple channels from comma-separated string
         channel_list = [ch.strip() for ch in CHANNELS.split(',') if ch.strip()]
         print(f"📋 Parsed {len(channel_list)} channels: {channel_list}")
+        
         # Channel mapping for better tracking
         channel_names = {}
+        
         # First, let's list available dialogs to help find the correct channels
         print("🔍 Listing your available chats/channels:")
         async for dialog in client.iter_dialogs():
             print(f"  📱 {dialog.name} (ID: {dialog.id}, Username: {getattr(dialog.entity, 'username', 'None')})")
+        
         # Validate each channel and build list of valid channels
         valid_channels = []
         for i, channel in enumerate(channel_list):
@@ -361,36 +370,48 @@ async def start_listener():
                 print(f"❌ [{i+1}] Could not access channel {channel}: {e}")
                 print(f"   Make sure you're a member of this channel/chat")
                 print("   Skipping this channel...")
+        
         if not valid_channels:
             print("❌ No valid channels found. Please check your CHANNELS environment variable")
             return
+            
         print(f"🎯 Setting up event listener for {len(valid_channels)} channels: {valid_channels}")
+        
         @client.on(events.NewMessage(chats=valid_channels))
         async def handler(ev):
             channel_name = channel_names.get(str(ev.chat_id), f"Unknown_{ev.chat_id}")
             print(f"📨 NEW MESSAGE from {channel_name} ({ev.chat_id})")
             print(f"📨 Content: {ev.message.message[:100] if ev.message.message else '[No text]'}...")
+            
             # Get message text
             text = (ev.message.message or "")
             # Add caption if it exists (for media messages)
             if hasattr(ev.message, 'caption') and ev.message.caption:
                 text += "\n" + ev.message.caption
+                
             print(f"🔍 Full text to process: {text[:300]}...")
+            
             # Extract codes using enhanced patterns (with values)
             codes_with_values = extract_codes_with_values(text)
             print(f"🎯 Extracted {len(codes_with_values)} codes: {codes_with_values}")
+            
             if not codes_with_values:
                 print("❌ No valid codes found in message")
                 return
+                
             ts = int(ev.message.date.timestamp() * 1000)
             broadcast_count = 0
+            
             for item in codes_with_values:
                 code = item["code"]
                 value = item["value"]
+                
                 if code in seen:
                     print(f"⚠️ Code {code} already seen, skipping")
                     continue
+                    
                 seen.add(code)
+                
                 # Enhanced entry with more metadata
                 entry = {
                     "type": "code",
@@ -411,20 +432,26 @@ async def start_listener():
                 # Add value to entry if it exists
                 if value:
                     entry["value"] = value
+                    
                 ring_add(entry)
                 broadcast_count += 1
+                
                 print(f"🚀 BROADCASTING #{broadcast_count} to {len(ws_manager.active)} connections")
                 print(f"   Code: {code}")
                 if value:
                     print(f"   Value: ${value}")
                 print(f"   Source: {channel_name}")
                 print(f"   Time: {ev.message.date}")
+                
                 # Fire and forget broadcast
                 asyncio.create_task(ws_manager.broadcast(entry))
+                
             print(f"⚡ Total codes broadcasted: {broadcast_count}")
+            
         # Update global status
         telegram_connected = True
         print("🎉 Event listener setup complete! Ready to receive messages...")
+        
         print("🚀 Starting Telegram client and listening for messages...")
         await client.start()
         print("✅ Telegram client started successfully!")
@@ -436,7 +463,33 @@ async def start_listener():
 
 @app.get("/")
 async def root(request: Request):
-    # Add debug info to help with WebSocket connection
+    # Check for Basic Authentication
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Basic "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            headers={"WWW-Authenticate": "Basic"}
+        )
+    
+    try:
+        # Decode the credentials
+        encoded_credentials = auth_header.split(" ")[1]
+        decoded_credentials = base64.b64decode(encoded_credentials).decode("utf-8")
+        username, password = decoded_credentials.split(":", 1)
+    except:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            headers={"WWW-Authenticate": "Basic"}
+        )
+    
+    # Verify password (username is ignored)
+    if password != "4y3q9y4q5r8qy49rq4nr3qy3y46y36437eq0hdu9e8wy8":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            headers={"WWW-Authenticate": "Basic"}
+        )
+    
+    # Original code continues here
     host = request.headers.get("host", "unknown")
     scheme = request.url.scheme
     base_url = f"{scheme}://{host}"
@@ -446,6 +499,431 @@ async def root(request: Request):
     print(f"🌐 Base URL: {base_url}")
     print(f"🌐 WebSocket URL: {ws_url}")
     
+    # Get current user connections
+    user_connections = []
+    now = datetime.now()
+    for username, expiry in authenticated_users.items():
+        if expiry > now:
+            delta = expiry - now
+            days = delta.days
+            hours, remainder = divmod(delta.seconds, 3600)
+            minutes, _ = divmod(remainder, 60)
+            time_left = f"{days}d {hours}h {minutes}m"
+        else:
+            time_left = "Expired"
+        
+        user_connections.append({
+            "username": username,
+            "time_left": time_left,
+            "expires": expiry.isoformat()
+        })
+    
+    # Render HTML with user connections
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Stake Auto Claimer - User Management</title>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+        <style>
+            :root {{
+                --primary: #6a11cb;
+                --secondary: #2575fc;
+                --success: #2ecc71;
+                --danger: #e74c3c;
+                --warning: #f39c12;
+                --info: #3498db;
+                --dark: #1a1a2e;
+                --darker: #0f0f1e;
+                --light: #f8f9fa;
+                --glass: rgba(255, 255, 255, 0.1);
+                --glass-border: rgba(255, 255, 255, 0.2);
+            }}
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            }}
+            body {{
+                background: linear-gradient(135deg, var(--darker) 0%, var(--dark) 100%);
+                color: var(--light);
+                min-height: 100vh;
+                overflow-x: hidden;
+            }}
+            .container {{
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 20px;
+            }}
+            .header {{
+                text-align: center;
+                margin-bottom: 30px;
+                padding: 20px;
+            }}
+            .header h1 {{
+                font-size: 2.5rem;
+                background: linear-gradient(45deg, var(--primary), var(--secondary));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 10px;
+            }}
+            .header p {{
+                color: #aaa;
+            }}
+            .panel {{
+                background: var(--glass);
+                backdrop-filter: blur(10px);
+                border: 1px solid var(--glass-border);
+                border-radius: 15px;
+                padding: 20px;
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+                margin-bottom: 20px;
+            }}
+            .panel-header {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 20px;
+                padding-bottom: 10px;
+                border-bottom: 1px solid var(--glass-border);
+            }}
+            .panel-title {{
+                font-size: 1.5rem;
+                font-weight: 600;
+            }}
+            .user-table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-bottom: 20px;
+            }}
+            .user-table th, .user-table td {{
+                padding: 12px;
+                text-align: left;
+                border-bottom: 1px solid var(--glass-border);
+            }}
+            .user-table th {{
+                background: rgba(255, 255, 255, 0.1);
+            }}
+            .user-table tr:hover {{
+                background: rgba(255, 255, 255, 0.05);
+            }}
+            .btn {{
+                display: inline-block;
+                padding: 10px 15px;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                text-align: center;
+                text-decoration: none;
+            }}
+            .btn-danger {{
+                background: var(--danger);
+                color: white;
+            }}
+            .btn-danger:hover {{
+                background: #c0392b;
+                transform: translateY(-2px);
+                box-shadow: 0 5px 15px rgba(231, 76, 60, 0.4);
+            }}
+            .btn-success {{
+                background: var(--success);
+                color: white;
+            }}
+            .btn-success:hover {{
+                background: #27ae60;
+                transform: translateY(-2px);
+                box-shadow: 0 5px 15px rgba(46, 204, 113, 0.4);
+            }}
+            .btn-primary {{
+                background: linear-gradient(45deg, var(--primary), var(--secondary));
+                color: white;
+            }}
+            .btn-primary:hover {{
+                transform: translateY(-2px);
+                box-shadow: 0 5px 15px rgba(106, 17, 203, 0.4);
+            }}
+            .add-user-form {{
+                display: flex;
+                flex-wrap: wrap;
+                gap: 15px;
+                align-items: flex-end;
+            }}
+            .form-group {{
+                flex: 1;
+                min-width: 200px;
+            }}
+            .form-group label {{
+                display: block;
+                margin-bottom: 5px;
+                font-weight: 600;
+            }}
+            .form-group input, .form-group select {{
+                width: 100%;
+                padding: 10px;
+                border: none;
+                border-radius: 8px;
+                background: rgba(255, 255, 255, 0.1);
+                color: var(--light);
+            }}
+            .form-group select {{
+                cursor: pointer;
+            }}
+            .stats {{
+                display: flex;
+                justify-content: space-around;
+                margin-bottom: 20px;
+            }}
+            .stat {{
+                text-align: center;
+            }}
+            .stat-value {{
+                font-size: 2rem;
+                font-weight: 700;
+                color: var(--primary);
+            }}
+            .stat-label {{
+                color: #aaa;
+            }}
+            .notification {{
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                padding: 15px 20px;
+                border-radius: 10px;
+                background: var(--glass);
+                backdrop-filter: blur(10px);
+                border: 1px solid var(--glass-border);
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+                z-index: 1000;
+                max-width: 300px;
+                display: none;
+            }}
+            .notification.success {{
+                border-left: 4px solid var(--success);
+            }}
+            .notification.error {{
+                border-left: 4px solid var(--danger);
+            }}
+            .notification-title {{
+                font-weight: 600;
+                margin-bottom: 5px;
+            }}
+            .notification-message {{
+                font-size: 0.9rem;
+            }}
+            .notification-close {{
+                position: absolute;
+                top: 10px;
+                right: 10px;
+                background: none;
+                border: none;
+                color: var(--light);
+                cursor: pointer;
+                font-size: 1rem;
+            }}
+            @media (max-width: 768px) {{
+                .add-user-form {{
+                    flex-direction: column;
+                }}
+                .form-group {{
+                    width: 100%;
+                }}
+                .stats {{
+                    flex-direction: column;
+                    gap: 15px;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1><i class="fas fa-rocket"></i> Stake Auto Claimer</h1>
+                <p>User Management Dashboard</p>
+            </div>
+            
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-value">{len(user_connections)}</div>
+                    <div class="stat-label">Active Users</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">{len(ws_manager.active)}</div>
+                    <div class="stat-label">Connected Clients</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">{len(ring)}</div>
+                    <div class="stat-label">Codes Claimed</div>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title"><i class="fas fa-users"></i> User Management</h2>
+                    <button class="btn btn-primary" onclick="window.location.href='/dashboard'">
+                        <i class="fas fa-tachometer-alt"></i> Go to Dashboard
+                    </button>
+                </div>
+                
+                <table class="user-table">
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>Time Left</th>
+                            <th>Expires</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+    """
+    
+    for user in user_connections:
+        html_content += f"""
+                        <tr>
+                            <td>{user['username']}</td>
+                            <td>{user['time_left']}</td>
+                            <td>{user['expires'][:10]}</td>
+                            <td>
+                                <button class="btn btn-danger" onclick="deleteUser('{user['username']}')">
+                                    <i class="fas fa-trash"></i> Delete
+                                </button>
+                            </td>
+                        </tr>
+        """
+    
+    if not user_connections:
+        html_content += """
+                        <tr>
+                            <td colspan="4" style="text-align: center; color: #aaa;">No users found</td>
+                        </tr>
+        """
+    
+    html_content += """
+                    </tbody>
+                </table>
+                
+                <div class="add-user-form">
+                    <div class="form-group">
+                        <label for="username">Username</label>
+                        <input type="text" id="username" placeholder="Enter username">
+                    </div>
+                    <div class="form-group">
+                        <label for="plan">Plan</label>
+                        <select id="plan">
+                            <option value="1day">1 Day</option>
+                            <option value="7days">7 Days</option>
+                            <option value="lifetime">Lifetime</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-success" onclick="addUser()">
+                        <i class="fas fa-user-plus"></i> Add User
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="notification" id="notification">
+            <button class="notification-close" onclick="closeNotification()">&times;</button>
+            <div class="notification-title" id="notificationTitle"></div>
+            <div class="notification-message" id="notificationMessage"></div>
+        </div>
+        
+        <script>
+            function showNotification(title, message, type) {
+                const notification = document.getElementById('notification');
+                const titleEl = document.getElementById('notificationTitle');
+                const messageEl = document.getElementById('notificationMessage');
+                
+                titleEl.textContent = title;
+                messageEl.textContent = message;
+                
+                notification.className = 'notification ' + type;
+                notification.style.display = 'block';
+                
+                setTimeout(() => {
+                    notification.style.display = 'none';
+                }, 5000);
+            }
+            
+            function closeNotification() {
+                document.getElementById('notification').style.display = 'none';
+            }
+            
+            async function addUser() {
+                const username = document.getElementById('username').value.trim();
+                const plan = document.getElementById('plan').value;
+                
+                if (!username) {
+                    showNotification('Error', 'Please enter a username', 'error');
+                    return;
+                }
+                
+                try {
+                    const response = await fetch('/admin/add_user', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ username, plan })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.status === 'success') {
+                        showNotification('Success', data.message, 'success');
+                        document.getElementById('username').value = '';
+                        setTimeout(() => window.location.reload(), 1000);
+                    } else {
+                        showNotification('Error', data.message, 'error');
+                    }
+                } catch (error) {
+                    showNotification('Error', 'Failed to add user', 'error');
+                    console.error('Error:', error);
+                }
+            }
+            
+            async function deleteUser(username) {
+                if (!confirm(`Are you sure you want to delete user "${username}"?`)) {
+                    return;
+                }
+                
+                try {
+                    const response = await fetch('/admin/delete_user', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ username })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.status === 'success') {
+                        showNotification('Success', data.message, 'success');
+                        setTimeout(() => window.location.reload(), 1000);
+                    } else {
+                        showNotification('Error', data.message, 'error');
+                    }
+                } catch (error) {
+                    showNotification('Error', 'Failed to delete user', 'error');
+                    console.error('Error:', error);
+                }
+            }
+        </script>
+    </body>
+    </html>
+    """
+    
+    return HTMLResponse(content=html_content)
+
+@app.get("/dashboard")
+async def dashboard(request: Request):
     return FileResponse('index.html')
 
 @app.get("/api")
@@ -520,8 +998,8 @@ async def startup_event():
 async def health():
     return PlainTextResponse("OK", 200)
 
-@app.get("/status")
-async def status():
+@app.get("/server_status")  # Renamed from /status to avoid conflict
+async def server_status():
     """Detailed status endpoint for monitoring"""
     telegram_status = False
     telegram_error = None
@@ -643,6 +1121,68 @@ async def add_user(username: str = Query(...), plan: str = Query(...)):
         "expires": expiration.isoformat(),
         "message": f"User {username} authenticated for {hours} hours"
     }, 200)
+
+# Admin endpoints for user management
+@app.post("/admin/add_user")
+async def add_user_api(request: dict):
+    """Add a user with a selected plan"""
+    username = request.get("username")
+    plan = request.get("plan")
+    
+    if not username or not plan:
+        return JSONResponse({
+            "status": "error",
+            "message": "Missing username or plan"
+        }, 400)
+    
+    # Calculate expiration based on plan
+    now = datetime.now()
+    if plan == "1day":
+        expiration = now + timedelta(days=1)
+    elif plan == "7days":
+        expiration = now + timedelta(days=7)
+    elif plan == "lifetime":
+        expiration = now + timedelta(days=365*100)  # 100 years
+    else:
+        return JSONResponse({
+            "status": "error",
+            "message": "Invalid plan"
+        }, 400)
+    
+    # Add or update user authentication
+    authenticated_users[username] = expiration
+    
+    # Log the action
+    print(f"🔒 Added user: {username} with plan: {plan} (expires: {expiration})")
+    
+    return JSONResponse({
+        "status": "success",
+        "message": f"User {username} added with {plan} plan"
+    })
+
+@app.post("/admin/delete_user")
+async def delete_user_api(request: dict):
+    """Delete a user"""
+    username = request.get("username")
+    
+    if not username:
+        return JSONResponse({
+            "status": "error",
+            "message": "Missing username"
+        }, 400)
+    
+    if username in authenticated_users:
+        del authenticated_users[username]
+        print(f"🗑️ Deleted user: {username}")
+        return JSONResponse({
+            "status": "success",
+            "message": f"User {username} deleted"
+        })
+    else:
+        return JSONResponse({
+            "status": "error",
+            "message": f"User {username} not found"
+        }, 404)
 
 @app.on_event("shutdown")
 async def shutdown_event():
