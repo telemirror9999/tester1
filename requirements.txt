@@ -5,3 +5,4 @@ aiohttp==3.9.0
 websockets
 python-multipart==0.0.6
 pymongo
+motor
