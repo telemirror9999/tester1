@@ -31,16 +31,6 @@ CHANNELS = os.getenv("CHANNELS", "-1002772030545,-1001234567890")  # Multiple ch
 CODE_PATTERNS = [
     r'(?i)Code:\s+([a-zA-Z0-9]{4,25})',           # "Code: stakecomrtlye4" - primary pattern
     r'(?i)Code:([a-zA-Z0-9]{4,25})',              # "Code:stakecomguft19f6" - no space version
-    r'(?i)Bonus:\s+([a-zA-Z0-9]{4,25})',         # "Bonus: ABC123"
-    r'(?i)Bonus:([a-zA-Z0-9]{4,25})',            # "Bonus:ABC123" 
-    r'(?i)Claim:\s+([a-zA-Z0-9]{4,25})',         # "Claim: ABC123"
-    r'(?i)Claim:([a-zA-Z0-9]{4,25})',            # "Claim:ABC123"
-    r'(?i)Promo:\s+([a-zA-Z0-9]{4,25})',         # "Promo: ABC123"
-    r'(?i)Promo:([a-zA-Z0-9]{4,25})',            # "Promo:ABC123"
-    r'(?i)Coupon:\s+([a-zA-Z0-9]{4,25})',        # "Coupon: ABC123"
-    r'(?i)Coupon:([a-zA-Z0-9]{4,25})',           # "Coupon:ABC123"
-    r'(?i)use\s+(?:code\s+)?([a-zA-Z0-9]{4,25})',  # "use code ABC123"
-    r'(?i)enter\s+(?:code\s+)?([a-zA-Z0-9]{4,25})', # "enter code ABC123"
 ]
 
 # Pattern for extracting both code and value from messages like:
