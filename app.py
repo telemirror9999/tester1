@@ -21,7 +21,7 @@ from bson import ObjectId
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://frozenbotss:frozenbots@cluster0.s0tak.mongodb.net/?retryWrites=true&w=majority")
 MONGODB_DB_NAME = "stake_autoclaimer"
 MONGODB_COLLECTION = "premium_users"
-PORT = int(os.getenv("PORT", "5000"))
+PORT = int(os.getenv("PORT", "5001"))
 TG_API_ID = int(os.getenv("TG_API_ID", "0") or "0")
 TG_API_HASH = os.getenv("TG_API_HASH", "")
 TG_SESSION = os.getenv("TG_SESSION", "tg_session")  # file path or session string
@@ -31,6 +31,16 @@ CHANNELS = os.getenv("CHANNELS", "-1002772030545,-1001234567890")  # Multiple ch
 CODE_PATTERNS = [
     r'(?i)Code:\s+([a-zA-Z0-9]{4,25})',           # "Code: stakecomrtlye4" - primary pattern
     r'(?i)Code:([a-zA-Z0-9]{4,25})',              # "Code:stakecomguft19f6" - no space version
+    r'(?i)Bonus:\s+([a-zA-Z0-9]{4,25})',         # "Bonus: ABC123"
+    r'(?i)Bonus:([a-zA-Z0-9]{4,25})',            # "Bonus:ABC123" 
+    r'(?i)Claim:\s+([a-zA-Z0-9]{4,25})',         # "Claim: ABC123"
+    r'(?i)Claim:([a-zA-Z0-9]{4,25})',            # "Claim:ABC123"
+    r'(?i)Promo:\s+([a-zA-Z0-9]{4,25})',         # "Promo: ABC123"
+    r'(?i)Promo:([a-zA-Z0-9]{4,25})',            # "Promo:ABC123"
+    r'(?i)Coupon:\s+([a-zA-Z0-9]{4,25})',        # "Coupon: ABC123"
+    r'(?i)Coupon:([a-zA-Z0-9]{4,25})',           # "Coupon:ABC123"
+    r'(?i)use\s+(?:code\s+)?([a-zA-Z0-9]{4,25})',  # "use code ABC123"
+    r'(?i)enter\s+(?:code\s+)?([a-zA-Z0-9]{4,25})', # "enter code ABC123"
 ]
 
 # Pattern for extracting both code and value from messages like:
@@ -179,6 +189,7 @@ seen: Set[str] = set()
 # User authentication system
 authenticated_users: Dict[str, datetime] = {}  # username -> expiration time
 cleanup_task = None
+periodic_sync_task = None
 
 async def init_mongodb():
     """Initialize MongoDB connection"""
@@ -207,6 +218,40 @@ async def load_premium_users():
         print(f"✅ Loaded {len(authenticated_users)} premium users from MongoDB")
     except Exception as e:
         print(f"❌ Error loading premium users: {e}")
+
+async def sync_users_from_mongodb():
+    """Sync premium users from MongoDB into memory"""
+    global authenticated_users
+    if premium_users_collection is None:
+        return False
+    
+    try:
+        # Get current users before sync
+        before_count = len(authenticated_users)
+        
+        # Clear and reload from MongoDB
+        authenticated_users.clear()
+        cursor = premium_users_collection.find({"expires_at": {"$gt": datetime.now()}})
+        async for user in cursor:
+            authenticated_users[user["username"]] = user["expires_at"]
+        
+        after_count = len(authenticated_users)
+        print(f"✅ Synced {after_count} premium users from MongoDB (was {before_count})")
+        return True
+    except Exception as e:
+        print(f"❌ Error syncing premium users: {e}")
+        return False
+
+async def periodic_sync():
+    """Periodically sync users from MongoDB every 5 minutes"""
+    while True:
+        try:
+            await asyncio.sleep(300)  # 5 minutes
+            print("🔄 Starting periodic sync from MongoDB...")
+            await sync_users_from_mongodb()
+        except Exception as e:
+            print(f"❌ Periodic sync error: {e}")
+            await asyncio.sleep(60)  # Wait a minute before retrying
 
 async def cleanup_expired_users():
     """Periodically remove expired user authentications"""
@@ -677,6 +722,15 @@ async def root(request: Request):
                 transform: translateY(-2px);
                 box-shadow: 0 5px 15px rgba(106, 17, 203, 0.4);
             }}
+            .btn-info {{
+                background: var(--info);
+                color: white;
+            }}
+            .btn-info:hover {{
+                background: #2980b9;
+                transform: translateY(-2px);
+                box-shadow: 0 5px 15px rgba(52, 152, 219, 0.4);
+            }}
             .add-user-form {{
                 display: flex;
                 flex-wrap: wrap;
@@ -756,6 +810,12 @@ async def root(request: Request):
                 cursor: pointer;
                 font-size: 1rem;
             }}
+            .sync-status {{
+                display: inline-block;
+                margin-left: 10px;
+                font-size: 0.9rem;
+                color: var(--success);
+            }}
             @media (max-width: 768px) {{
                 .add-user-form {{
                     flex-direction: column;
@@ -766,6 +826,13 @@ async def root(request: Request):
                 .stats {{
                     flex-direction: column;
                     gap: 15px;
+                }}
+                .panel-header {{
+                    flex-direction: column;
+                    align-items: flex-start;
+                }}
+                .panel-header .btn {{
+                    margin-top: 10px;
                 }}
             }}
         </style>
@@ -795,9 +862,14 @@ async def root(request: Request):
             <div class="panel">
                 <div class="panel-header">
                     <h2 class="panel-title"><i class="fas fa-users"></i> User Management</h2>
-                    <button class="btn btn-primary" onclick="window.location.href='/dashboard'">
-                        <i class="fas fa-tachometer-alt"></i> Go to Dashboard
-                    </button>
+                    <div>
+                        <button class="btn btn-info" onclick="syncUsers()">
+                            <i class="fas fa-sync"></i> Sync Users
+                        </button>
+                        <button class="btn btn-primary" onclick="window.location.href='/dashboard'">
+                            <i class="fas fa-tachometer-alt"></i> Go to Dashboard
+                        </button>
+                    </div>
                 </div>
                 
                 <table class="user-table">
@@ -944,6 +1016,37 @@ async def root(request: Request):
                     console.error('Error:', error);
                 }
             }
+            
+            async function syncUsers() {
+                const syncButton = document.querySelector('.btn-info');
+                const originalText = syncButton.innerHTML;
+                syncButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...';
+                syncButton.disabled = true;
+                
+                try {
+                    const response = await fetch('/admin/sync_users', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.status === 'success') {
+                        showNotification('Success', data.message, 'success');
+                        setTimeout(() => window.location.reload(), 1000);
+                    } else {
+                        showNotification('Error', data.message, 'error');
+                    }
+                } catch (error) {
+                    showNotification('Error', 'Failed to sync users', 'error');
+                    console.error('Error:', error);
+                } finally {
+                    syncButton.innerHTML = originalText;
+                    syncButton.disabled = false;
+                }
+            }
         </script>
     </body>
     </html>
@@ -989,9 +1092,13 @@ async def startup_event():
         await load_premium_users()
     
     # Start user cleanup task
-    global cleanup_task
+    global cleanup_task, periodic_sync_task
     cleanup_task = asyncio.create_task(cleanup_expired_users())
     print("🔒 Started user authentication cleanup task")
+    
+    # Start periodic sync task
+    periodic_sync_task = asyncio.create_task(periodic_sync())
+    print("🔄 Started periodic MongoDB sync task (every 5 minutes)")
     
     # Auto-authenticate default user
     global authenticated_users
@@ -1073,6 +1180,7 @@ async def server_status():
         "api_hash_set": bool(TG_API_HASH and len(TG_API_HASH) > 5),
         "authenticated_users": len(authenticated_users),
         "auth_cleanup_running": cleanup_task is not None,
+        "periodic_sync_running": periodic_sync_task is not None,
         "default_user": DEFAULT_USERNAME,
         "mongodb_status": mongodb_status,
         "mongodb_error": mongodb_error,
@@ -1288,6 +1396,21 @@ async def delete_user_api(request: dict):
         "message": f"User {username} deleted"
     })
 
+@app.post("/admin/sync_users")
+async def sync_users_api():
+    """Manually sync users from MongoDB"""
+    success = await sync_users_from_mongodb()
+    if success:
+        return JSONResponse({
+            "status": "success",
+            "message": "Users synced from MongoDB successfully"
+        })
+    else:
+        return JSONResponse({
+            "status": "error",
+            "message": "Failed to sync users from MongoDB"
+        }, 500)
+
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean shutdown of services"""
@@ -1299,6 +1422,15 @@ async def shutdown_event():
         except asyncio.CancelledError:
             pass
         print("🛑 User cleanup task stopped")
+    
+    # Cancel periodic sync task
+    if periodic_sync_task:
+        periodic_sync_task.cancel()
+        try:
+            await periodic_sync_task
+        except asyncio.CancelledError:
+            pass
+        print("🛑 Periodic sync task stopped")
     
     # Close MongoDB connection
     if mongo_client:
