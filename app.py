@@ -25,7 +25,7 @@ PORT = int(os.getenv("PORT", "5001"))
 TG_API_ID = int(os.getenv("TG_API_ID", "0") or "0")
 TG_API_HASH = os.getenv("TG_API_HASH", "")
 TG_SESSION = os.getenv("TG_SESSION", "tg_session")  # file path or session string
-CHANNELS = os.getenv("CHANNELS", "-1002772030545,-1001234567890")  # Multiple channels separated by comma
+CHANNELS = os.getenv("CHANNELS", "-1002772030545,-1001234567890","-1001992047801")  # Multiple channels separated by comma
 
 # Enhanced regex patterns for different code formats
 CODE_PATTERNS = [
