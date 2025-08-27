@@ -16,7 +16,6 @@ from fastapi import HTTPException, status
 import base64
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
-
 # MongoDB Configuration
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://frozenbotss:frozenbots@cluster0.s0tak.mongodb.net/?retryWrites=true&w=majority")
 MONGODB_DB_NAME = "stake_autoclaimer"
@@ -25,8 +24,7 @@ PORT = int(os.getenv("PORT", "5001"))
 TG_API_ID = int(os.getenv("TG_API_ID", "0") or "0")
 TG_API_HASH = os.getenv("TG_API_HASH", "")
 TG_SESSION = os.getenv("TG_SESSION", "tg_session")  # file path or session string
-CHANNELS = os.getenv("CHANNELS", "-1002772030545,-1001234567890")  # Multiple channels separated by comma
-
+CHANNELS = os.getenv("CHANNELS", "-1002772030545,-1001234567890)  # Multiple channels separated by comma
 # Enhanced regex patterns for different code formats
 CODE_PATTERNS = [
     r'(?i)Code:\s+([a-zA-Z0-9]{4,25})',           # "Code: stakecomrtlye4" - primary pattern
@@ -42,7 +40,6 @@ CODE_PATTERNS = [
     r'(?i)use\s+(?:code\s+)?([a-zA-Z0-9]{4,25})',  # "use code ABC123"
     r'(?i)enter\s+(?:code\s+)?([a-zA-Z0-9]{4,25})', # "enter code ABC123"
 ]
-
 # Pattern for extracting both code and value from messages like:
 # Code: stakecomlop1n84b
 # Value: $3
@@ -50,9 +47,7 @@ CODE_VALUE_PATTERN = r'(?i)Code:\s+([a-zA-Z0-9]{4,25})(?:.*?\n.*?Value:\s+\$?(\d
 CLAIM_URL_BASE = os.getenv("CLAIM_URL_BASE", "https://autoclaim.example.com")
 RING_SIZE = int(os.getenv("RING_SIZE", "100"))
 DEFAULT_USERNAME = "kustdev"  
-
 app = FastAPI()
-
 # Add CORS middleware to allow all origins for WebSocket connections
 app.add_middleware(
     CORSMiddleware,
@@ -61,14 +56,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # Static files mount removed since index.html is in root directory
-
 # MongoDB Client
 mongo_client = None
 db = None
 premium_users_collection = None
-
 class WSManager:
     def __init__(self):
         self.active: Dict[str, Dict] = {}  # client_id -> { 'ws': WebSocket, 'username': str }
@@ -86,11 +78,24 @@ class WSManager:
             await ws.close(code=1008, reason="Authentication required")
             return False
             
-        # Check if username is already connected
+        # If username is already connected, close the old connection
         if username in self.username_map:
-            print(f"❌ Username already connected: {username}")
-            await ws.close(code=1008, reason="mother fucker buy one more")
-            return False
+            old_client_id = self.username_map[username]
+            if old_client_id in self.active:
+                old_ws = self.active[old_client_id]['ws']
+                # Remove the old connection from active and username_map
+                del self.active[old_client_id]
+                del self.username_map[username]
+                print(f"🔄 Removing old connection for {username} ({old_client_id})")
+                try:
+                    await old_ws.close(code=1000, reason="New connection from same user")
+                    print(f"🔄 Closed old connection for {username} ({old_client_id})")
+                except Exception as e:
+                    print(f"⚠️ Error closing old connection for {username}: {e}")
+            else:
+                # If the old_client_id is not in active, just remove from username_map
+                del self.username_map[username]
+                print(f"🔄 Removed stale mapping for {username} (client_id: {old_client_id})")
             
         await ws.accept()
         client_id = f"{username}:{ws.client.host}:{ws.client.port}:{id(ws)}"
@@ -181,16 +186,13 @@ class WSManager:
     def validate_code_ownership(self, code: str, username: str) -> bool:
         """Check if the code belongs to the specified username"""
         return self.code_ownership.get(code) == username
-
 ws_manager = WSManager()
 ring: List[Dict[str, Any]] = []
 seen: Set[str] = set()
-
 # User authentication system
 authenticated_users: Dict[str, datetime] = {}  # username -> expiration time
 cleanup_task = None
 periodic_sync_task = None
-
 async def init_mongodb():
     """Initialize MongoDB connection"""
     global mongo_client, db, premium_users_collection
@@ -203,7 +205,6 @@ async def init_mongodb():
     except Exception as e:
         print(f"❌ MongoDB connection error: {e}")
         return False
-
 async def load_premium_users():
     """Load premium users from MongoDB into memory"""
     global authenticated_users
@@ -218,7 +219,6 @@ async def load_premium_users():
         print(f"✅ Loaded {len(authenticated_users)} premium users from MongoDB")
     except Exception as e:
         print(f"❌ Error loading premium users: {e}")
-
 async def sync_users_from_mongodb():
     """Sync premium users from MongoDB into memory"""
     global authenticated_users
@@ -241,7 +241,6 @@ async def sync_users_from_mongodb():
     except Exception as e:
         print(f"❌ Error syncing premium users: {e}")
         return False
-
 async def periodic_sync():
     """Periodically sync users from MongoDB every 5 minutes"""
     while True:
@@ -252,7 +251,6 @@ async def periodic_sync():
         except Exception as e:
             print(f"❌ Periodic sync error: {e}")
             await asyncio.sleep(60)  # Wait a minute before retrying
-
 async def cleanup_expired_users():
     """Periodically remove expired user authentications"""
     global cleanup_task
@@ -275,11 +273,9 @@ async def cleanup_expired_users():
             await asyncio.sleep(3600)
             
     cleanup_task = None
-
 def normalize_code(s: str) -> str:
     # Remove non-alphanumeric characters but preserve original case
     return re.sub(r"[^A-Za-z0-9]", "", s)
-
 def extract_codes_with_values(text: str) -> List[Dict[str, Any]]:
     """Extract bonus codes and values using multiple patterns, prioritizing 'Code:' format"""
     if not text:
@@ -351,22 +347,17 @@ def extract_codes_with_values(text: str) -> List[Dict[str, Any]]:
     
     print(f"🔍 Final extracted codes: {unique_codes}")
     return unique_codes
-
 def extract_codes(text: str) -> List[str]:
     """Legacy function for backward compatibility - extracts only codes"""
     codes_with_values = extract_codes_with_values(text)
     return [item["code"] for item in codes_with_values]
-
 def ring_add(entry: Dict[str, Any]):
     ring.append(entry)
     if len(ring) > RING_SIZE:
         ring.pop(0)
-
 def ring_latest() -> Optional[Dict[str, Any]]:
     return ring[-1] if ring else None
-
 tg_client = None
-
 async def ensure_tg():
     global tg_client
     if tg_client:
@@ -407,7 +398,6 @@ async def ensure_tg():
         print(f"❌ TELEGRAM CLIENT ERROR: {e}")
         print(f"❌ Error type: {type(e).__name__}")
         raise e
-
 async def start_listener():
     global telegram_connected
     try:
@@ -534,7 +524,6 @@ async def start_listener():
         print(f"❌ LISTENER ERROR: {e}")
         print(f"❌ Error type: {type(e).__name__}")
         telegram_connected = False
-
 @app.get("/")
 async def root(request: Request):
     # Check for Basic Authentication
@@ -1053,16 +1042,13 @@ async def root(request: Request):
     """
     
     return HTMLResponse(content=html_content)
-
 @app.get("/dashboard")
 async def dashboard(request: Request):
     return FileResponse('index.html')
-
 @app.get("/api")
 @app.head("/api")
 async def api_root():
     return JSONResponse({"status": "running", "endpoints": ["/health", "/latest", "/version", "/ws", "/add"]})
-
 @app.on_event("startup")
 async def startup_event():
     print("🚀 STAKE ULTRA CLAIMER - VPS DEPLOYMENT")
@@ -1137,12 +1123,10 @@ async def startup_event():
         print("   - TG_API_HASH (Telegram API Hash)")
         print("   - CHANNELS (Channel IDs separated by comma)")
         print("   Example: CHANNELS=-1002772030545,-1001234567890")
-
 @app.get("/health")
 @app.head("/health")
 async def health():
     return PlainTextResponse("OK", 200)
-
 @app.get("/server_status")  # Renamed from /status to avoid conflict
 async def server_status():
     """Detailed status endpoint for monitoring"""
@@ -1186,11 +1170,9 @@ async def server_status():
         "mongodb_error": mongodb_error,
         "mongodb_uri_set": bool(MONGODB_URI)
     }, 200)
-
 @app.get("/latest")
 async def latest():
     return JSONResponse(ring_latest() or {}, 200)
-
 @app.get("/api/codes")
 async def api_codes():
     """API endpoint for userscript to fetch available codes - returns empty array (only WebSocket delivers new codes)"""
@@ -1204,11 +1186,9 @@ async def api_codes():
     }
     print(f"📡 API request for codes: directing to use WebSocket for real-time codes")
     return JSONResponse(response, 200)
-
 @app.get("/version")
 async def version():
     return JSONResponse({"v":"1.0.0"}, 200)
-
 @app.post("/test-code")
 async def test_code(request: dict):
     """Test endpoint to simulate receiving a Telegram code"""
@@ -1230,7 +1210,6 @@ async def test_code(request: dict):
     await ws_manager.broadcast(entry)
     print(f"✅ Test code broadcasted successfully: {test_code}")
     return JSONResponse({"status": "sent", "code": test_code, "active_connections": len(ws_manager.active)}, 200)
-
 @app.get("/send-test-code/{code}")
 async def send_test_code_get(code: str):
     """Quick test endpoint to send a code via GET request"""
@@ -1251,7 +1230,6 @@ async def send_test_code_get(code: str):
     await ws_manager.broadcast(entry)
     print(f"✅ Test code broadcasted successfully: {code}")
     return JSONResponse({"status": "sent", "code": code, "active_connections": len(ws_manager.active)}, 200)
-
 @app.get("/add")
 async def add_user(username: str = Query(...), plan: str = Query(...)):
     """Add a user with time-based authentication"""
@@ -1299,7 +1277,6 @@ async def add_user(username: str = Query(...), plan: str = Query(...)):
         "expires": expiration.isoformat(),
         "message": f"User {username} authenticated for {hours} hours"
     }, 200)
-
 # Admin endpoints for user management
 @app.post("/admin/add_user")
 async def add_user_api(request: dict):
@@ -1359,7 +1336,6 @@ async def add_user_api(request: dict):
         "status": "success",
         "message": f"User {username} added with {plan} plan"
     })
-
 @app.post("/admin/delete_user")
 async def delete_user_api(request: dict):
     """Delete a user"""
@@ -1395,7 +1371,6 @@ async def delete_user_api(request: dict):
         "status": "success",
         "message": f"User {username} deleted"
     })
-
 @app.post("/admin/sync_users")
 async def sync_users_api():
     """Manually sync users from MongoDB"""
@@ -1410,7 +1385,6 @@ async def sync_users_api():
             "status": "error",
             "message": "Failed to sync users from MongoDB"
         }, 500)
-
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean shutdown of services"""
@@ -1436,7 +1410,6 @@ async def shutdown_event():
     if mongo_client:
         mongo_client.close()
         print("🛑 MongoDB connection closed")
-
 @app.websocket("/ws")
 async def ws(ws: WebSocket, user: str = Query(..., alias="user")):
     # Get username from query parameter
@@ -1501,7 +1474,7 @@ async def ws(ws: WebSocket, user: str = Query(..., alias="user")):
                                 "type": "validation_result",
                                 "code": code,
                                 "valid": False,
-                                "message": "mother fucker buy one more"
+                                "message": "Multiple connections not allowed. Please purchase additional licenses."
                             })
             except asyncio.TimeoutError:
                 # Timeout is normal, just continue the loop
@@ -1517,7 +1490,6 @@ async def ws(ws: WebSocket, user: str = Query(..., alias="user")):
     finally:
         await ws_manager.disconnect(ws)
         print(f"🔌 WebSocket {client_info} cleaned up. Active: {len(ws_manager.active)}")
-
 # Server startup
 if __name__ == "__main__":
     # Get the local IP address for display
